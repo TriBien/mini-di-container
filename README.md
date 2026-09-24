@@ -358,6 +358,88 @@ Spring AOP is proxy-based: depending on configuration and available interfaces, 
 
 This is why the production mental model should not stop at “Spring injects my object.” A mature container can **transform the object reference that gets published**.
 
+### CGLIB Proxy Mechanism
+
+CGLIB (Code Generation Library) creates dynamic proxies by **subclassing the target class at runtime**. Unlike JDK dynamic proxies, it does not require the target to implement an interface; it generates a subclass that overrides methods and intercepts calls via callbacks.
+
+#### How it works
+
+1. **Enhancer** creates a subclass of the target class.
+2. Register a **MethodInterceptor** (callback) to intercept method invocations.
+3. In `intercept(...)`, execute cross-cutting logic (before/after), then delegate to the original method using `proxy.invokeSuper(obj, args)`.
+4. `enhancer.create()` returns an instance of the generated subclass, castable to the target class type.
+
+> **Note:** `final` classes, `final` methods, and `private` methods cannot be overridden, so they cannot be proxied by CGLIB.
+
+#### Code Example
+
+```java
+import net.sf.cglib.proxy.Enhancer;
+import net.sf.cglib.proxy.MethodInterceptor;
+import net.sf.cglib.proxy.MethodProxy;
+
+import java.lang.reflect.Method;
+
+public class CglibProxyExample {
+    // Target class (no interface required)
+    static class GreetingService {
+        public String greet(String name) {
+            return "Hello, " + name + "!";
+        }
+    }
+
+    // Interceptor to add logging
+    static class LoggingInterceptor implements MethodInterceptor {
+        @Override
+        public Object intercept(Object obj, Method method, Object[] args, MethodProxy proxy) throws Throwable {
+            System.out.println("[CGLIB] Before: " + method.getName());
+            Object result = proxy.invokeSuper(obj, args); // call original
+            System.out.println("[CGLIB] After:  " + method.getName() + " -> " + result);
+            return result;
+        }
+    }
+
+    public static void main(String[] args) {
+        Enhancer enhancer = new Enhancer();
+        enhancer.setSuperclass(GreetingService.class);
+        enhancer.setCallback(new LoggingInterceptor());
+
+        GreetingService proxy = (GreetingService) enhancer.create();
+        System.out.println(proxy.greet("World"));
+    }
+}
+```
+
+**Output:**
+
+```text
+[CGLIB] Before: greet
+[CGLIB] After:  greet -> Hello, World!
+Hello, World!
+```
+
+#### JDK vs CGLIB
+
+| Aspect | JDK Dynamic Proxy | CGLIB |
+|---|---|---|
+| **Basis** | Implements interfaces | Subclasses the target class |
+| **Requirement** | Must implement at least one interface | Any non-final concrete class |
+| **Proxy Type** | Implements target interfaces | Extends target class |
+| **Proxied Members** | Only interface methods | Public/protected overridable instance methods |
+| **Limitations** | Cannot proxy classes/non-interface methods | Cannot proxy `final` classes or `final`/`private` methods |
+| **Default in Spring** | When interfaces exist | When no interfaces exist (or `proxy-target-class="true"`) |
+
+#### Guidelines for Using CGLIB
+
+- **Prefer interfaces.** Favor interface-based design + JDK proxies when possible.
+- **Use when needed.** Use CGLIB only when the target has no interfaces, or you explicitly need class-based proxies.
+- **Avoid `final`.** Do not mark proxy targets or key methods `final` if they need to be intercepted.
+- **Delegate correctly.** Always use `proxy.invokeSuper(obj, args)` (not `method.invoke(target, args)`) to call the original implementation.
+- **Ensure a no-arg constructor.** The generated subclass requires an accessible no-argument constructor on the superclass.
+- **Keep interceptors stateless.** Share callbacks across proxies; avoid storing per-invocation mutable state in interceptor fields.
+- **Respect self-invocation.** Calls to other methods on `this` inside the proxied class bypass the proxy (AOP limitation for both JDK and CGLIB).
+- **Spring note:** Set `@EnableAspectJAutoProxy(proxyTargetClass = true)` to force CGLIB globally when needed.
+
 ---
 
 # 4. What Spring hides
